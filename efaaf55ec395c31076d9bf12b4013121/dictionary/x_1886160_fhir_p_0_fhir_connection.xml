@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?><database>
+    <element attributes="enforce_dot_walk_cross_scope_access=true" audit="true" db_object_id="500bb19ec395c31076d9bf12b401317a" label="FHIR Connection" max_length="40" name="x_1886160_fhir_p_0_fhir_connection" type="collection">
+        <element label="Enrich: recent labs" max_length="40" name="enrich_recent_labs" type="boolean"/>
+        <element label="FHIR base URL" max_length="1024" name="fhir_base_url" type="url"/>
+        <element label="Name" max_length="100" name="name" type="string"/>
+        <element label="Enrich: active conditions" max_length="255" name="enrich_conditions" type="boolean"/>
+        <element label="Active" max_length="40" name="active" type="boolean"/>
+        <element label="Enrich: demographics" max_length="40" name="enrich_demographics" type="boolean"/>
+        <element attributes="edge_encryption_enabled=true" choice="3" default="open_sandbox" label="Environment" max_length="40" name="environment" type="choice">
+            <choice/>
+        </element>
+        <element label="Enrich: recent encounters" max_length="255" name="enrich_encounters" type="boolean"/>
+        <element label="MRN identifier system(URI)" max_length="255" name="mrn_identifier_system" type="string"/>
+        <element label="Page size(_count)" max_length="40" name="page_size" type="integer"/>
+        <element label="Token endpoint(OAuth)" max_length="1024" name="token_endpoint" type="url"/>
+    </element>
+</database>

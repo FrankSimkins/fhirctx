@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?><database>
+    <element attributes="enforce_dot_walk_cross_scope_access=true" db_object_id="fa009e5ac359c31076d9bf12b40131b3" label="Access Audit" max_length="40" name="x_1886160_fhir_p_0_access_audit" type="collection">
+        <element label="Labs count" max_length="40" name="labs_count" type="integer"/>
+        <element label="Accessed by" max_length="32" name="accessed_by" reference="sys_user" type="reference"/>
+        <element label="Encounters count" max_length="40" name="encounters_count" type="integer"/>
+        <element label="Conditions count" max_length="40" name="conditions_count" type="integer"/>
+        <element display="true" label="Patient id" max_length="100" name="patient_id" type="string"/>
+        <element label="Message" max_length="1000" name="message" type="string"/>
+        <element label="Outcome" max_length="40" name="outcome" type="string"/>
+        <element label="Connection" max_length="32" name="connection" reference="x_1886160_fhir_p_0_fhir_connection" type="reference"/>
+        <index name="index">
+            <element name="accessed_by"/>
+        </index>
+        <index name="index2">
+            <element name="connection"/>
+        </index>
+    </element>
+</database>

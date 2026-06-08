@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_1886160_fhir_p_0.FHIRConnectionValidator</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <mobile_callable>false</mobile_callable>
+        <name>FHIRConnectionValidator</name>
+        <sandbox_callable>false</sandbox_callable>
+        <script><![CDATA[/**
+ *
+ * PHI note: the CapabilityStatement contains no patient data, and this code
+ * never logs or surfaces the raw response body either way — only structural
+ * facts (resource types + search param names).
+ *
+ */
+var FHIRConnectionValidator = Class.create();
+FHIRConnectionValidator.prototype = {
+ 
+    initialize: function() {
+        // Required search params per FHIR resource, driving the planned queries:
+        //   Patient?identifier=  | Condition?patient=  | Encounter?patient=
+        //   Observation?category=laboratory&patient=  (&code= for specific labs)
+        // Edit this map if a server advertises params differently.
+        this.REQUIRED = {
+            Patient: ['identifier'],
+            Condition: ['patient'],
+            Encounter: ['patient'],
+            Observation: ['category', 'code', 'patient']
+        };
+        this.TIMEOUT_MS = 15000;
+        this.TABLE = 'x_1886160_fhir_p_0_fhir_connection';
+    },
+ 
+    /**
+     * @param {String} connectionSysId  sys_id of an x_1886160_fhirctx_connection record
+     * @returns {Object} { ok:Boolean, summary:String, details:Array<String>, httpStatus:Number|null }
+     */
+    validate: function(connectionSysId) {
+        var result = { ok: false, summary: '', details: [], httpStatus: null };
+ 
+        var gr = new GlideRecord(this.TABLE);
+        if (!gr.get(connectionSysId)) {
+            result.summary = 'Connection record not found.';
+            return result;
+        }
+ 
+        var base = (gr.getValue('fhir_base_url') || '').trim();
+        if (!base) {
+            result.summary = 'FHIR base URL is empty on this connection.';
+            return result;
+        }
+        var endpoint = base.replace(/\/+$/, '') + '/metadata';
+ 
+        // --- one-shot GET /metadata ---
+        var body, status;
+        try {
+            var rm = new sn_ws.RESTMessageV2();
+            rm.setHttpMethod('get');
+            rm.setEndpoint(endpoint);
+            rm.setRequestHeader('Accept', 'application/fhir+json');
+            rm.setHttpTimeout(this.TIMEOUT_MS);
+ 
+            var resp = rm.execute();
+            status = parseInt(resp.getStatusCode(), 10);
+            result.httpStatus = status;
+ 
+            if (resp.haveError()) {
+                // transport-level failure (DNS, TLS, connection) — PHI-free message
+                result.summary = 'Request failed reaching ' + endpoint + ': ' + resp.getErrorMessage();
+                return result;
+            }
+            body = resp.getBody();
+        } catch (e) {
+            result.summary = 'Request threw an exception calling ' + endpoint + ': ' + e.message;
+            return result;
+        }
+ 
+        if (status !== 200) {
+            result.summary = 'Endpoint returned HTTP ' + status + ' (expected 200) for ' + endpoint + '.';
+            return result;
+        }
+ 
+        // --- parse CapabilityStatement ---
+        var cap;
+        try {
+            cap = JSON.parse(body);
+        } catch (e2) {
+            result.summary = 'Response from ' + endpoint + ' was not valid JSON.';
+            return result;
+        }
+        if (!cap || cap.resourceType !== 'CapabilityStatement') {
+            result.summary = 'Response is not a FHIR CapabilityStatement (resourceType = ' +
+                (cap && cap.resourceType ? cap.resourceType : 'none') + ').';
+            return result;
+        }
+ 
+        // --- index server-mode searchParams: { ResourceType: { paramName: true } } ---
+        var found = this._indexSearchParams(cap);
+ 
+        // --- check required params, recording a specific line for each ---
+        var missing = [];
+        for (var rType in this.REQUIRED) {
+            var needed = this.REQUIRED[rType];
+            var have = found[rType] || {};
+            for (var i = 0; i < needed.length; i++) {
+                var p = needed[i];
+                var present = !!have[p];
+                result.details.push(rType + '.' + p + ': ' + (present ? 'found' : 'MISSING'));
+                if (!present) {
+                    missing.push(rType + '.' + p);
+                }
+            }
+        }
+ 
+        result.ok = (missing.length === 0);
+        result.summary = result.ok ?
+            'Connection valid: CapabilityStatement returned and all required search params are present.' :
+            'Reachable, but missing required search params: ' + missing.join(', ') + '.';
+        return result;
+    },
+ 
+    /**
+     * Flatten CapabilityStatement.rest[].resource[].searchParam[] into a lookup.
+     * Only server-mode rest blocks are considered.
+     */
+    _indexSearchParams: function(cap) {
+        var index = {};
+        var rest = cap.rest || [];
+        for (var i = 0; i < rest.length; i++) {
+            if (rest[i].mode && rest[i].mode !== 'server') {
+                continue;
+            }
+            var resources = rest[i].resource || [];
+            for (var j = 0; j < resources.length; j++) {
+                var r = resources[j];
+                if (!r || !r.type) {
+                    continue;
+                }
+                index[r.type] = index[r.type] || {};
+                var sps = r.searchParam || [];
+                for (var k = 0; k < sps.length; k++) {
+                    if (sps[k] && sps[k].name) {
+                        index[r.type][sps[k].name] = true;
+                    }
+                }
+            }
+        }
+        return index;
+    },
+ 
+    type: 'FHIRConnectionValidator'
+};
+]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>fsimkins</sys_created_by>
+        <sys_created_on>2026-06-08 01:41:02</sys_created_on>
+        <sys_id>e0cf315ac3d5c31076d9bf12b4013139</sys_id>
+        <sys_mod_count>2</sys_mod_count>
+        <sys_name>FHIRConnectionValidator</sys_name>
+        <sys_package display_value="FHIR Patient Context for ServiceNow" source="x_1886160_fhir_p_0">efaaf55ec395c31076d9bf12b4013121</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="FHIR Patient Context for ServiceNow">efaaf55ec395c31076d9bf12b4013121</sys_scope>
+        <sys_update_name>sys_script_include_e0cf315ac3d5c31076d9bf12b4013139</sys_update_name>
+        <sys_updated_by>fsimkins</sys_updated_by>
+        <sys_updated_on>2026-06-08 01:59:18</sys_updated_on>
+    </sys_script_include>
+</record_update>

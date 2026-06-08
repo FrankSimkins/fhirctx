@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_1886160_fhir_p_0.FHIRPatientContextService</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <mobile_callable>false</mobile_callable>
+        <name>FHIRPatientContextService</name>
+        <sandbox_callable>false</sandbox_callable>
+        <script><![CDATA[var FHIRPatientContextService = Class.create();
+FHIRPatientContextService.prototype = {
+
+    initialize: function() {
+        this.USER_ROLE = 'x_1886160_fhir_p_0.user';
+        this.AUDIT_TABLE = 'x_1886160_fhir_p_0_access_audit';
+        this.CONN_TABLE = 'x_1886160_fhir_p_0_fhir_connection';
+    },
+
+    run: function(connectionSysId, mrn, system) {
+        var result = {
+            outcome: 'error',
+            message: '',
+            patientId: null,
+            candidateIds: [],
+            context: null
+        };
+
+        if (!gs.hasRole(this.USER_ROLE)) {
+            result.outcome = 'forbidden';
+            result.message = 'Access requires role ' + this.USER_ROLE + '.';
+            this._audit(connectionSysId, null, result.outcome, result.message, null);
+            return result;
+        }
+
+        connectionSysId = this._pickConnection(connectionSysId);
+        if (!connectionSysId) {
+            result.outcome = 'error';
+            result.message = 'No active FHIR connection is configured.';
+            this._audit(null, null, result.outcome, result.message, null);
+            return result;
+        }
+
+        var resolver = new x_1886160_fhir_p_0.FHIRPatientResolver();
+        var r = resolver.resolve(connectionSysId, mrn, system);
+
+        if (r.outcome !== 'found') {
+            result.outcome = r.outcome;
+            result.message = r.message;
+            result.candidateIds = r.candidateIds || [];
+            this._audit(connectionSysId, r.patientId, result.outcome, result.message, null);
+            return result;
+        }
+
+        result.patientId = r.patientId;
+
+        var svc = new x_1886160_fhir_p_0.FHIREnrichmentService();
+        var ctx = svc.getEnrichment(connectionSysId, r.patientId);
+
+        result.context = ctx;
+        result.outcome = 'ok';
+        result.message = 'Patient context assembled for Patient/' + r.patientId + '.';
+        this._audit(connectionSysId, r.patientId, result.outcome, result.message, ctx);
+        return result;
+    },
+
+    _pickConnection: function(connectionSysId) {
+        if (connectionSysId) {
+            return connectionSysId;
+        }
+        var gr = new GlideRecord(this.CONN_TABLE);
+        gr.addQuery('active', true);
+        gr.orderBy('sys_created_on');
+        gr.setLimit(1);
+        gr.query();
+        if (gr.next()) {
+            return gr.getUniqueValue();
+        }
+        return null;
+    },
+
+    _audit: function(connectionSysId, patientId, outcome, message, ctx) {
+        try {
+            var gr = new GlideRecord(this.AUDIT_TABLE);
+            gr.initialize();
+            gr.setValue('accessed_by', gs.getUserID());
+            if (connectionSysId) {
+                gr.setValue('connection', connectionSysId);
+            }
+            gr.setValue('patient_id', patientId || '');
+            gr.setValue('outcome', outcome);
+            gr.setValue('message', ('' + (message || '')).substr(0, 1000));
+            if (ctx && ctx.sections) {
+                gr.setValue('conditions_count', (ctx.sections.conditions || []).length);
+                gr.setValue('encounters_count', (ctx.sections.encounters || []).length);
+                gr.setValue('labs_count', (ctx.sections.labs || []).length);
+            }
+            gr.insert();
+        } catch (e) {
+            gs.error('FHIRPatientContextService audit write failed: ' + e.message);
+        }
+    },
+
+    type: 'FHIRPatientContextService'
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>fsimkins</sys_created_by>
+        <sys_created_on>2026-06-08 03:08:44</sys_created_on>
+        <sys_id>f9051216c399c31076d9bf12b4013181</sys_id>
+        <sys_mod_count>1</sys_mod_count>
+        <sys_name>FHIRPatientContextService</sys_name>
+        <sys_package display_value="FHIR Patient Context for ServiceNow" source="x_1886160_fhir_p_0">efaaf55ec395c31076d9bf12b4013121</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="FHIR Patient Context for ServiceNow">efaaf55ec395c31076d9bf12b4013121</sys_scope>
+        <sys_update_name>sys_script_include_f9051216c399c31076d9bf12b4013181</sys_update_name>
+        <sys_updated_by>fsimkins</sys_updated_by>
+        <sys_updated_on>2026-06-08 03:27:07</sys_updated_on>
+    </sys_script_include>
+</record_update>

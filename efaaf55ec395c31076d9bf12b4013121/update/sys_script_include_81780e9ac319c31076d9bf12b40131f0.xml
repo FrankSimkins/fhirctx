@@ -1,0 +1,346 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_1886160_fhir_p_0.FHIREnrichmentService</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <mobile_callable>false</mobile_callable>
+        <name>FHIREnrichmentService</name>
+        <sandbox_callable>false</sandbox_callable>
+        <script><![CDATA[var FHIREnrichmentService = Class.create();
+FHIREnrichmentService.prototype = {
+
+    initialize: function() {
+        this.TABLE = 'x_1886160_fhir_p_0_fhir_connection';
+        this.TIMEOUT_MS = 15000;
+        this.RECENT_LIMIT = 10;
+    },
+
+    getDemographics: function(connectionSysId, patientId) {
+        var ctx = this._begin(connectionSysId, patientId, 'demographics');
+        if (ctx.error) return ctx.error;
+
+        var res = this._fetchJson(ctx.base, '/Patient/' + encodeURIComponent(ctx.patientId));
+        var out = this._sectionResult(res);
+        if (out.outcome !== 'ok') return out;
+
+        var p = res.json;
+        if (!p || p.resourceType !== 'Patient') {
+            return this._err('Response was not a FHIR Patient (resourceType = ' +
+                (p && p.resourceType ? p.resourceType : 'none') + ').', res.status);
+        }
+        out.demographics = this._extractDemographics(p);
+        out.message = 'Demographics retrieved for Patient/' + ctx.patientId + '.';
+        return out;
+    },
+
+    getActiveConditions: function(connectionSysId, patientId) {
+        var ctx = this._begin(connectionSysId, patientId, 'conditions');
+        if (ctx.error) return ctx.error;
+
+        var q = '/Condition?patient=' + encodeURIComponent(ctx.patientId) + '&clinical-status=active';
+        var res = this._fetchJson(ctx.base, q);
+        var out = this._sectionResult(res);
+        if (out.outcome !== 'ok') return out;
+
+        var items = this._mapEntries(res.json, 'Condition', this._mapCondition);
+        out.conditions = items;
+        out.total = items.length;
+        out.message = items.length + ' active condition(s) for Patient/' + ctx.patientId + '.';
+        return out;
+    },
+
+    getRecentEncounters: function(connectionSysId, patientId) {
+        var ctx = this._begin(connectionSysId, patientId, 'encounters');
+        if (ctx.error) return ctx.error;
+
+        var q = '/Encounter?patient=' + encodeURIComponent(ctx.patientId) + '&_count=' + ctx.pageSize;
+        var res = this._fetchJson(ctx.base, q);
+        var out = this._sectionResult(res);
+        if (out.outcome !== 'ok') return out;
+
+        var items = this._mapEntries(res.json, 'Encounter', this._mapEncounter);
+        items = this._recentBy(items, 'start');
+        out.encounters = items;
+        out.total = items.length;
+        out.message = items.length + ' recent encounter(s) for Patient/' + ctx.patientId + '.';
+        return out;
+    },
+
+    getRecentLabs: function(connectionSysId, patientId) {
+        var ctx = this._begin(connectionSysId, patientId, 'labs');
+        if (ctx.error) return ctx.error;
+
+        var q = '/Observation?patient=' + encodeURIComponent(ctx.patientId) +
+            '&category=laboratory&_count=' + ctx.pageSize;
+        var res = this._fetchJson(ctx.base, q);
+        var out = this._sectionResult(res);
+        if (out.outcome !== 'ok') return out;
+
+        var items = this._mapEntries(res.json, 'Observation', this._mapObservation);
+        items = this._recentBy(items, 'effective');
+        out.labs = items;
+        out.total = items.length;
+        out.message = items.length + ' recent lab result(s) for Patient/' + ctx.patientId + '.';
+        return out;
+    },
+
+    getEnrichment: function(connectionSysId, patientId) {
+        var combined = {
+            patientId: ('' + (patientId || '')).trim(),
+            sections: { demographics: null, conditions: [], encounters: [], labs: [] },
+            errors: {},
+            status: {}
+        };
+
+        var cfg = this._connectionConfig(connectionSysId);
+        if (!cfg) {
+            combined.errors.connection = 'Connection record not found or has no base URL.';
+            return combined;
+        }
+
+        var plan = [
+            { on: cfg.flags.demographics, key: 'demographics', fn: this.getDemographics, field: 'demographics', list: false },
+            { on: cfg.flags.conditions, key: 'conditions', fn: this.getActiveConditions, field: 'conditions', list: true },
+            { on: cfg.flags.encounters, key: 'encounters', fn: this.getRecentEncounters, field: 'encounters', list: true },
+            { on: cfg.flags.labs, key: 'labs', fn: this.getRecentLabs, field: 'labs', list: true }
+        ];
+
+        for (var i = 0; i < plan.length; i++) {
+            var step = plan[i];
+            if (!step.on) {
+                continue;
+            }
+            var r = step.fn.call(this, connectionSysId, combined.patientId);
+            combined.status[step.key] = r.httpStatus;
+            if (r.outcome === 'ok') {
+                combined.sections[step.field] = step.list ? r[step.field] : r.demographics;
+            } else {
+                combined.errors[step.key] = r.message;
+            }
+        }
+        return combined;
+    },
+
+    _extractDemographics: function(p) {
+        var d = {
+            patientId: p.id || null, mrn: null, name: '', family: '', given: '',
+            gender: p.gender || null, birthDate: p.birthDate || null, deceased: null,
+            phones: [], address: null
+        };
+
+        var ids = p.identifier || [];
+        for (var i = 0; i < ids.length; i++) {
+            var idr = ids[i];
+            if (!idr || !idr.value || !idr.type) continue;
+            var isMrn = (idr.type.text && idr.type.text.toUpperCase() === 'MRN');
+            var codings = idr.type.coding || [];
+            for (var c = 0; c < codings.length; c++) {
+                if (codings[c].code === 'MR' || codings[c].display === 'MRN') isMrn = true;
+            }
+            if (!isMrn) continue;
+            var isCurrent = !(idr.period && idr.period.end);
+            if (!d.mrn || isCurrent) d.mrn = { system: idr.system || null, value: idr.value };
+        }
+
+        var names = p.name || [];
+        var chosen = null;
+        for (var n = 0; n < names.length; n++) {
+            if (names[n].use === 'official') { chosen = names[n]; break; }
+        }
+        if (!chosen && names.length) chosen = names[0];
+        if (chosen) {
+            d.family = chosen.family || '';
+            d.given = (chosen.given || []).join(' ');
+            d.name = (d.given + ' ' + d.family).trim() || (chosen.text || '');
+        }
+
+        if (typeof p.deceasedBoolean === 'boolean') d.deceased = p.deceasedBoolean;
+        else if (p.deceasedDateTime) d.deceased = p.deceasedDateTime;
+
+        var tel = p.telecom || [];
+        for (var t = 0; t < tel.length; t++) {
+            if (tel[t].system === 'phone' && tel[t].value) d.phones.push({ use: tel[t].use || null, value: tel[t].value });
+        }
+
+        var addrs = p.address || [];
+        var a = null;
+        for (var ai = 0; ai < addrs.length; ai++) { if (addrs[ai].use === 'home') { a = addrs[ai]; break; } }
+        if (!a && addrs.length) a = addrs[0];
+        if (a) {
+            d.address = {
+                line: (a.line || []).join(', '), city: a.city || null,
+                state: a.state || null, postalCode: a.postalCode || null, use: a.use || null
+            };
+        }
+        return d;
+    },
+
+    _mapCondition: function(c) {
+        return {
+            id: c.id || null,
+            display: (c.code && (c.code.text || FHIREnrichmentService._codingDisplay(c.code.coding))) || null,
+            clinicalStatus: c.clinicalStatus && FHIREnrichmentService._codingCode(c.clinicalStatus.coding),
+            category: FHIREnrichmentService._firstCategory(c.category),
+            onset: c.onsetDateTime || (c.onsetPeriod && c.onsetPeriod.start) || null,
+            recordedDate: c.recordedDate || null
+        };
+    },
+
+    _mapEncounter: function(e) {
+        return {
+            id: e.id || null,
+            status: e.status || null,
+            class: e.class && (e.class.display || e.class.code) || null,
+            type: (e.type && e.type[0] && (e.type[0].text || FHIREnrichmentService._codingDisplay(e.type[0].coding))) || null,
+            start: (e.period && e.period.start) || null,
+            end: (e.period && e.period.end) || null,
+            reason: (e.reasonCode && e.reasonCode[0] && (e.reasonCode[0].text || FHIREnrichmentService._codingDisplay(e.reasonCode[0].coding))) || null
+        };
+    },
+
+    _mapObservation: function(o) {
+        var value = null, unit = null;
+        if (o.valueQuantity) { value = o.valueQuantity.value; unit = o.valueQuantity.unit || o.valueQuantity.code || null; }
+        else if (typeof o.valueString === 'string') { value = o.valueString; }
+        else if (o.valueCodeableConcept) { value = o.valueCodeableConcept.text || FHIREnrichmentService._codingDisplay(o.valueCodeableConcept.coding); }
+        return {
+            id: o.id || null,
+            display: (o.code && (o.code.text || FHIREnrichmentService._codingDisplay(o.code.coding))) || null,
+            value: (value === undefined ? null : value),
+            unit: unit,
+            effective: o.effectiveDateTime || (o.effectivePeriod && o.effectivePeriod.start) || null,
+            status: o.status || null,
+            interpretation: (o.interpretation && o.interpretation[0] && FHIREnrichmentService._codingCode(o.interpretation[0].coding)) || null
+        };
+    },
+
+    _fetchJson: function(base, pathAndQuery) {
+        var r = { ok: false, status: null, notFound: false, json: null, message: '' };
+        var endpoint = base.replace(/\/+$/, '') + pathAndQuery;
+        var body, status, transportErr = null;
+        try {
+            var rm = new sn_ws.RESTMessageV2();
+            rm.setHttpMethod('get');
+            rm.setEndpoint(endpoint);
+            rm.setRequestHeader('Accept', 'application/fhir+json');
+            rm.setHttpTimeout(this.TIMEOUT_MS);
+            var resp = rm.execute();
+            status = parseInt(resp.getStatusCode(), 10);
+            r.status = status;
+            body = resp.getBody();
+            if (!status || isNaN(status)) transportErr = resp.getErrorMessage();
+        } catch (e) {
+            r.message = 'Request threw an exception: ' + e.message;
+            return r;
+        }
+        if (transportErr) { r.message = 'Failed reaching the server: ' + transportErr; return r; }
+        if (status === 404 || status === 410) { r.notFound = true; r.message = 'Not found (HTTP ' + status + ').'; return r; }
+        if (status !== 200) { r.message = 'Returned HTTP ' + status + ' (expected 200).'; return r; }
+        try { r.json = JSON.parse(body); } catch (e2) { r.message = 'Response was not valid JSON.'; return r; }
+        r.ok = true;
+        return r;
+    },
+
+    _begin: function(connectionSysId, patientId, section) {
+        var pid = ('' + (patientId || '')).trim();
+        if (!pid) return { error: this._err('Patient id is required.', null) };
+        var cfg = this._connectionConfig(connectionSysId);
+        if (!cfg) return { error: this._err('Connection record not found or has no base URL.', null) };
+        return { base: cfg.base, pageSize: cfg.pageSize, patientId: pid, section: section };
+    },
+
+    _connectionConfig: function(connectionSysId) {
+        var gr = new GlideRecord(this.TABLE);
+        if (!gr.get(connectionSysId)) return null;
+        var base = (gr.getValue('fhir_base_url') || '').trim();
+        if (!base) return null;
+        var size = parseInt(gr.getValue('page_size'), 10);
+        if (isNaN(size) || size <= 0) size = 50;
+        return {
+            base: base,
+            mrnSystem: (gr.getValue('mrn_identifier_system') || '').trim(),
+            pageSize: size,
+            flags: {
+                demographics: this._isTrue(gr.getValue('enrich_demographics')),
+                conditions: this._isTrue(gr.getValue('enrich_conditions')),
+                encounters: this._isTrue(gr.getValue('enrich_encounters')),
+                labs: this._isTrue(gr.getValue('enrich_recent_labs'))
+            }
+        };
+    },
+
+    _sectionResult: function(res) {
+        var out = { outcome: 'error', httpStatus: res.status, message: res.message, total: 0 };
+        if (res.ok) { out.outcome = 'ok'; out.message = ''; }
+        else if (res.notFound) { out.outcome = 'not_found'; }
+        return out;
+    },
+
+    _err: function(message, status) {
+        return { outcome: 'error', httpStatus: status, message: message, total: 0 };
+    },
+
+    _isTrue: function(v) {
+        return v === '1' || v === 'true' || v === true;
+    },
+
+    _mapEntries: function(bundle, resourceType, mapper) {
+        var items = [];
+        if (!bundle || bundle.resourceType !== 'Bundle') return items;
+        var entries = bundle.entry || [];
+        for (var i = 0; i < entries.length; i++) {
+            var r = entries[i] && entries[i].resource;
+            if (!r || r.resourceType !== resourceType) continue;
+            var mode = entries[i].search && entries[i].search.mode;
+            if (mode && mode !== 'match') continue;
+            items.push(mapper(r));
+        }
+        return items;
+    },
+
+    _recentBy: function(items, field) {
+        items.sort(function(a, b) {
+            var av = a[field] || '', bv = b[field] || '';
+            if (av === bv) return 0;
+            if (!av) return 1;
+            if (!bv) return -1;
+            return av < bv ? 1 : -1;
+        });
+        return items.slice(0, this.RECENT_LIMIT);
+    },
+
+    type: 'FHIREnrichmentService'
+};
+
+FHIREnrichmentService._codingDisplay = function(coding) {
+    if (!coding || !coding.length) return null;
+    for (var i = 0; i < coding.length; i++) { if (coding[i] && coding[i].display) return coding[i].display; }
+    return null;
+};
+FHIREnrichmentService._codingCode = function(coding) {
+    if (!coding || !coding.length) return null;
+    for (var i = 0; i < coding.length; i++) { if (coding[i] && coding[i].code) return coding[i].code; }
+    return null;
+};
+FHIREnrichmentService._firstCategory = function(categoryArr) {
+    if (!categoryArr || !categoryArr.length) return null;
+    var c = categoryArr[0];
+    return (c && (c.text || FHIREnrichmentService._codingDisplay(c.coding) || FHIREnrichmentService._codingCode(c.coding))) || null;
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>fsimkins</sys_created_by>
+        <sys_created_on>2026-06-08 02:14:29</sys_created_on>
+        <sys_id>81780e9ac319c31076d9bf12b40131f0</sys_id>
+        <sys_mod_count>3</sys_mod_count>
+        <sys_name>FHIREnrichmentService</sys_name>
+        <sys_package display_value="FHIR Patient Context for ServiceNow" source="x_1886160_fhir_p_0">efaaf55ec395c31076d9bf12b4013121</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="FHIR Patient Context for ServiceNow">efaaf55ec395c31076d9bf12b4013121</sys_scope>
+        <sys_update_name>sys_script_include_81780e9ac319c31076d9bf12b40131f0</sys_update_name>
+        <sys_updated_by>fsimkins</sys_updated_by>
+        <sys_updated_on>2026-06-08 02:34:55</sys_updated_on>
+    </sys_script_include>
+</record_update>

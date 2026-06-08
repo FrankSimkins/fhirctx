@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ui_page">
+    <sys_ui_page action="INSERT_OR_UPDATE">
+        <category>general</category>
+        <client_script><![CDATA[function fhirCtxLoad() {
+    var el = document.getElementById('fhirCtxBody');
+    if (!el) {
+        return;
+    }
+    var mrnEl = document.getElementById('fhirCtxMrn');
+    var mrn = mrnEl ? mrnEl.value : '';
+    if (!mrn) {
+        el.innerHTML = '<div style="color:#b00">No MRN provided.</div>';
+        return;
+    }
+
+    var done = false;
+    var ga = new GlideAjax('x_1886160_fhir_p_0.FHIRPatientContextAjax');
+    ga.addParam('sysparm_name', 'getPatientContext');
+    ga.addParam('sysparm_mrn', mrn);
+    ga.getXMLAnswer(function(answer) {
+        done = true;
+        try {
+            el.innerHTML = answer ? fhirCtxRender(JSON.parse(answer)) :
+                '<div style="color:#b00">Empty response from the server. Confirm FHIRPatientContextAjax is Client callable and that you hold the x_1886160_fhir_p_0.user role.</div>';
+        } catch (e) {
+            el.innerHTML = '<div style="color:#b00">Could not parse the server response: ' + fhirCtxEsc(e.message || e) + '</div>';
+        }
+    });
+
+    setTimeout(function() {
+        if (!done) {
+            el.innerHTML = '<div style="color:#b00">No response from the server (timed out).</div>';
+        }
+    }, 15000);
+}
+
+function fhirCtxEsc(s) {
+    if (s === null || s === undefined) {
+        return '';
+    }
+    return ('' + s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function fhirCtxCap(s) {
+    if (!s) {
+        return '';
+    }
+    return ('' + s).charAt(0).toUpperCase() + ('' + s).slice(1);
+}
+
+function fhirCtxRow(label, value, isHtml) {
+    if (value === null || value === undefined || value === '') {
+        return '';
+    }
+    var v = isHtml ? value : fhirCtxEsc(value);
+    return '<div style="display:table-row">' +
+        '<div style="display:table-cell;padding:2px 14px 2px 0;color:#666;font-weight:bold;white-space:nowrap;vertical-align:top">' +
+        fhirCtxEsc(label) + '</div>' +
+        '<div style="display:table-cell;color:#222;vertical-align:top">' + v + '</div>' +
+        '</div>';
+}
+
+function fhirCtxSection(title, items, fmt) {
+    var h = '<h4 style="margin:14px 0 4px;border-top:1px solid #eee;padding-top:8px">' + fhirCtxEsc(title) + '</h4>';
+    if (!items || !items.length) {
+        return h + '<div style="color:#888">None.</div>';
+    }
+    var lis = items.map(function(it) {
+        return '<li style="margin:2px 0">' + fmt(it) + '</li>';
+    }).join('');
+    return h + '<ul style="margin:0;padding-left:18px">' + lis + '</ul>';
+}
+
+function fhirCtxDemographics(d) {
+    var html = ['<h3 style="margin:0 0 8px">' + fhirCtxEsc(d.name || '(no name)') + '</h3>'];
+    var rows = [];
+
+    rows.push(fhirCtxRow('Gender', fhirCtxCap(d.gender)));
+    rows.push(fhirCtxRow('Date of birth', d.birthDate));
+    if (d.mrn && d.mrn.value) {
+        rows.push(fhirCtxRow('MRN', d.mrn.value));
+    }
+    if (d.deceased) {
+        rows.push(fhirCtxRow('Deceased', d.deceased === true ? 'Yes' : d.deceased));
+    }
+
+    if (d.address) {
+        var a = d.address;
+        var cityState = [a.city, a.state].filter(Boolean).join(', ');
+        var lastLine = [cityState, a.postalCode].filter(Boolean).join(' ');
+        var addr = [a.line, lastLine].filter(Boolean).map(fhirCtxEsc).join('<br>');
+        rows.push(fhirCtxRow('Address', addr, true));
+    }
+
+    if (d.phones && d.phones.length) {
+        var ph = d.phones.map(function(p) {
+            var use = p.use ? fhirCtxCap(p.use) : 'Phone';
+            return '<span style="color:#666">' + fhirCtxEsc(use) + ':</span> ' + fhirCtxEsc(p.value);
+        }).join('<br>');
+        rows.push(fhirCtxRow('Phone', ph, true));
+    }
+
+    html.push('<div style="display:table;border-spacing:0">' + rows.filter(Boolean).join('') + '</div>');
+    return html.join('');
+}
+
+function fhirCtxRender(res) {
+    if (!res || res.outcome !== 'ok') {
+        var label = (res && res.outcome) ? res.outcome : 'error';
+        if (res && res.outcome === 'multiple') {
+            return '<div style="color:#8a6d00"><strong>Multiple patients matched:</strong> ' +
+                fhirCtxEsc((res.candidateIds || []).join(', ')) + '</div>';
+        }
+        return '<div style="color:#b00"><strong>' + fhirCtxEsc(label) + ':</strong> ' +
+            fhirCtxEsc(res ? res.message : 'No response.') + '</div>';
+    }
+
+    var ctx = res.context || {};
+    var s = ctx.sections || {};
+    var html = [];
+
+    if (s.demographics) {
+        html.push(fhirCtxDemographics(s.demographics));
+    } else {
+        html.push('<div style="color:#888">No demographics.</div>');
+    }
+
+    html.push(fhirCtxSection('Active Conditions', s.conditions, function(c) {
+        return fhirCtxEsc(c.display || '(condition)') +
+            (c.clinicalStatus ? ' <span style="color:#888">[' + fhirCtxEsc(c.clinicalStatus) + ']</span>' : '') +
+            (c.onset ? ' <span style="color:#888">' + fhirCtxEsc(c.onset) + '</span>' : '');
+    }));
+
+    html.push(fhirCtxSection('Recent Encounters', s.encounters, function(e) {
+        return fhirCtxEsc(e.type || e.class || '(encounter)') +
+            (e.start ? ' <span style="color:#888">' + fhirCtxEsc(e.start) + '</span>' : '') +
+            (e.status ? ' [' + fhirCtxEsc(e.status) + ']' : '');
+    }));
+
+    html.push(fhirCtxSection('Recent Labs', s.labs, function(l) {
+        var v = (l.value !== null && l.value !== undefined) ?
+            (' = ' + fhirCtxEsc(l.value) + (l.unit ? ' ' + fhirCtxEsc(l.unit) : '')) : '';
+        var flag = l.interpretation ? ' <strong style="color:#b00">' + fhirCtxEsc(l.interpretation) + '</strong>' : '';
+        return fhirCtxEsc(l.display || '(lab)') + v + flag +
+            (l.effective ? ' <span style="color:#888">' + fhirCtxEsc(l.effective) + '</span>' : '');
+    }));
+
+    var errs = ctx.errors || {};
+    var ek = Object.keys(errs);
+    if (ek.length) {
+        var elist = ek.map(function(k) {
+            return '<li>' + fhirCtxEsc(k) + ': ' + fhirCtxEsc(errs[k]) + '</li>';
+        }).join('');
+        html.push('<div style="margin-top:10px;color:#8a6d00"><strong>Some sections failed:</strong>' +
+            '<ul style="margin:4px 0;padding-left:18px">' + elist + '</ul></div>');
+    }
+
+    return html.join('');
+}
+
+addLoadEvent(fhirCtxLoad);]]></client_script>
+        <description/>
+        <direct>false</direct>
+        <endpoint>x_1886160_fhir_p_0_fhir_patient_context.do</endpoint>
+        <html><![CDATA[<?xml version="1.0" encoding="utf-8" ?>
+<j:jelly trim="false" xmlns:j="jelly:core" xmlns:g="glide" xmlns:j2="null" xmlns:g2="null">
+  <g:evaluate var="jvar_mrn">
+    var _wp = RP.getWindowProperties();
+    var _mrn = '';
+    if (_wp) { _mrn = _wp.sysparm_mrn; }
+    if (!_mrn) { _mrn = RP.getParameterValue('sysparm_mrn'); }
+    _mrn = _mrn ? ('' + _mrn) : '';
+    _mrn;
+  </g:evaluate>
+  <input type="hidden" id="fhirCtxMrn" value="${jvar_mrn}" />
+  <div id="fhirCtxBody" style="padding:16px;font-family:Arial,Helvetica,sans-serif;max-height:70vh;overflow:auto">Loading patient context&#8230;</div>
+</j:jelly>]]></html>
+        <name>fhir_patient_context</name>
+        <processing_script/>
+        <sys_class_name>sys_ui_page</sys_class_name>
+        <sys_created_by>fsimkins</sys_created_by>
+        <sys_created_on>2026-06-08 04:02:19</sys_created_on>
+        <sys_id>1d01e21ec3d9c31076d9bf12b40131c4</sys_id>
+        <sys_mod_count>2</sys_mod_count>
+        <sys_name>fhir_patient_context</sys_name>
+        <sys_package display_value="FHIR Patient Context for ServiceNow" source="x_1886160_fhir_p_0">efaaf55ec395c31076d9bf12b4013121</sys_package>
+        <sys_policy/>
+        <sys_scope display_value="FHIR Patient Context for ServiceNow">efaaf55ec395c31076d9bf12b4013121</sys_scope>
+        <sys_update_name>sys_ui_page_1d01e21ec3d9c31076d9bf12b40131c4</sys_update_name>
+        <sys_updated_by>fsimkins</sys_updated_by>
+        <sys_updated_on>2026-06-08 04:15:59</sys_updated_on>
+    </sys_ui_page>
+</record_update>

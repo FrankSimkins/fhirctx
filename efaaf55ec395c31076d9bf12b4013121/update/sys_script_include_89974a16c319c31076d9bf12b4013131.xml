@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_1886160_fhir_p_0.FHIRPatientResolver</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <mobile_callable>false</mobile_callable>
+        <name>FHIRPatientResolver</name>
+        <sandbox_callable>false</sandbox_callable>
+        <script><![CDATA[var FHIRPatientResolver = Class.create();
+FHIRPatientResolver.prototype = {
+ 
+    initialize: function() {
+        this.TABLE = 'x_1886160_fhir_p_0_fhir_connection';
+        this.TIMEOUT_MS = 15000;
+    },
+
+    resolve: function(connectionSysId, mrn, identifierSystem) {
+        var out = {
+            outcome: 'error',
+            patientId: null,
+            candidateIds: [],
+            total: 0,
+            httpStatus: null,
+            message: ''
+        };
+ 
+        mrn = ('' + (mrn || '')).trim();
+        if (!mrn) {
+            out.message = 'MRN is required.';
+            return out;
+        }
+ 
+        var gr = new GlideRecord(this.TABLE);
+        if (!gr.get(connectionSysId)) {
+            out.message = 'Connection record not found.';
+            return out;
+        }
+        var base = (gr.getValue('fhir_base_url') || '').trim();
+        if (!base) {
+            out.message = 'FHIR base URL is empty on this connection.';
+            return out;
+        }
+ 
+
+        var sys = ('' + (identifierSystem || gr.getValue('mrn_identifier_system') || '')).trim();
+        var token = sys ? (sys + '|' + mrn) : mrn;
+
+        var endpoint = base.replace(/\/+$/, '') + '/Patient?identifier=' + encodeURIComponent(token);
+ 
+        var body, status;
+        try {
+            var rm = new sn_ws.RESTMessageV2();
+            rm.setHttpMethod('get');
+            rm.setEndpoint(endpoint);
+            rm.setRequestHeader('Accept', 'application/fhir+json');
+            rm.setHttpTimeout(this.TIMEOUT_MS);
+ 
+            var resp = rm.execute();
+            status = parseInt(resp.getStatusCode(), 10);
+            out.httpStatus = status;
+ 
+            if (resp.haveError()) {
+                out.message = 'Patient search failed reaching the server: ' + resp.getErrorMessage();
+                return out;
+            }
+            body = resp.getBody();
+        } catch (e) {
+            out.message = 'Patient search threw an exception: ' + e.message;
+            return out;
+        }
+ 
+        if (status !== 200) {
+            out.message = 'Patient search returned HTTP ' + status + ' (expected 200).';
+            return out;
+        }
+ 
+        var bundle;
+        try {
+            bundle = JSON.parse(body);
+        } catch (e2) {
+            out.message = 'Patient search response was not valid JSON.';
+            return out;
+        }
+        if (!bundle || bundle.resourceType !== 'Bundle') {
+            out.message = 'Response was not a FHIR searchset Bundle (resourceType = ' +
+                (bundle && bundle.resourceType ? bundle.resourceType : 'none') + ').';
+            return out;
+        }
+ 
+        var ids = this._collectPatientIds(bundle);
+        out.candidateIds = ids;
+        out.total = ids.length;
+ 
+        if (ids.length === 0) {
+            out.outcome = 'not_found';
+            out.message = 'No patient matched MRN ' + mrn + (sys ? (' in system ' + sys) : ' (all systems)') + '.';
+        } else if (ids.length === 1) {
+            out.outcome = 'found';
+            out.patientId = ids[0];
+            out.message = 'Resolved to Patient/' + ids[0] + '.';
+        } else {
+            out.outcome = 'multiple';
+            out.message = ids.length + ' patients matched MRN ' + mrn + ': ' + ids.join(', ') + '.';
+        }
+        return out;
+    },
+ 
+    _collectPatientIds: function(bundle) {
+        var ids = [];
+        var seen = {};
+        var entries = bundle.entry || [];
+        for (var i = 0; i < entries.length; i++) {
+            var r = entries[i] && entries[i].resource;
+            if (!r || r.resourceType !== 'Patient' || !r.id) {
+                continue;
+            }
+
+            var mode = entries[i].search && entries[i].search.mode;
+            if (mode && mode !== 'match') {
+                continue;
+            }
+            if (seen[r.id]) {
+                continue;
+            }
+            seen[r.id] = true;
+            ids.push(r.id);
+        }
+        return ids;
+    },
+ 
+    type: 'FHIRPatientResolver'
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>fsimkins</sys_created_by>
+        <sys_created_on>2026-06-08 02:10:09</sys_created_on>
+        <sys_id>89974a16c319c31076d9bf12b4013131</sys_id>
+        <sys_mod_count>1</sys_mod_count>
+        <sys_name>FHIRPatientResolver</sys_name>
+        <sys_package display_value="FHIR Patient Context for ServiceNow" source="x_1886160_fhir_p_0">efaaf55ec395c31076d9bf12b4013121</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="FHIR Patient Context for ServiceNow">efaaf55ec395c31076d9bf12b4013121</sys_scope>
+        <sys_update_name>sys_script_include_89974a16c319c31076d9bf12b4013131</sys_update_name>
+        <sys_updated_by>fsimkins</sys_updated_by>
+        <sys_updated_on>2026-06-08 02:12:11</sys_updated_on>
+    </sys_script_include>
+</record_update>
